@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"os"
+	"time"
 )
 
 func main() {
@@ -32,13 +34,17 @@ func main() {
 }
 
 type Response struct {
-	StatusCode int
-	Error      error
+	StatusCode      int
+	Error           error
+	TotalTime       time.Duration
+	TimeToFirstByte time.Duration
 }
 
 type Results struct {
-	Successes int
-	Failures  int
+	Successes   int
+	Failures    int
+	Responses   []Response
+	StatusCodes map[int]int
 }
 
 func loadTest(testURL *url.URL, n int, concurrency int) Results {
@@ -56,7 +62,9 @@ func loadTest(testURL *url.URL, n int, concurrency int) Results {
 	}
 	close(jobs)
 
-	res := Results{}
+	res := Results{
+		StatusCodes: map[int]int{},
+	}
 	// collect results of work
 	for range n {
 		resp := <-results
@@ -65,6 +73,10 @@ func loadTest(testURL *url.URL, n int, concurrency int) Results {
 		} else {
 			res.Successes++
 		}
+		res.Responses = append(res.Responses, resp)
+		if resp.Error == nil {
+			res.StatusCodes[resp.StatusCode] += 1
+		}
 	}
 
 	return res
@@ -72,14 +84,40 @@ func loadTest(testURL *url.URL, n int, concurrency int) Results {
 
 func worker(jobs <-chan string, results chan<- Response) {
 	for j := range jobs {
-		resp, err := http.Get(j)
+		c := http.Client{}
+		req, err := http.NewRequest(http.MethodGet, j, nil)
 		if err != nil {
 			results <- Response{
-				Error: err,
+				Error:     err,
+				TotalTime: 0,
 			}
+			return
+		}
+
+		var start time.Time
+		var timeToFirstByte time.Duration
+		trace := &httptrace.ClientTrace{
+			GotFirstResponseByte: func() {
+				timeToFirstByte = time.Since(start)
+			},
+		}
+
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+
+		start = time.Now()
+		resp, err := c.Do(req)
+		duration := time.Since(start)
+		if err != nil {
+			results <- Response{
+				TotalTime: duration,
+				Error:     err,
+			}
+			return
 		}
 		results <- Response{
-			StatusCode: resp.StatusCode,
+			TotalTime:       duration,
+			StatusCode:      resp.StatusCode,
+			TimeToFirstByte: timeToFirstByte,
 		}
 	}
 }

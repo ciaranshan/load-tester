@@ -12,3 +12,11 @@ https://gobyexample.com/command-line-flags
 
 # Step 3
 allow concurrent requests using `-c` flag and report summary of result
+https://gobyexample.com/worker-pools
+
+# Step 4
+Collect stats for the requests:
+- total time
+- time to first byte
+- time to last byte
+- number of responses
