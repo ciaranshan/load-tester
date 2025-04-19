@@ -20,3 +20,11 @@ Collect stats for the requests:
 - time to first byte
 - time to last byte
 - number of responses
+
+https://go.dev/blog/http-tracing
+https://pkg.go.dev/net/http/httptrace#example-package
+https://gist.github.com/cep21/86ddbaf4e66977fc2b67be84c17989f1
+
+# Step 5
+report the stats gathered in step 5 in a summary format that is useful to the user
+

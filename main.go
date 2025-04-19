@@ -10,6 +10,32 @@ import (
 	"time"
 )
 
+type Response struct {
+	StatusCode      int
+	Error           error
+	TotalTime       time.Duration
+	TimeToFirstByte time.Duration
+}
+
+type Results struct {
+	Successes   int
+	Failures    int
+	Responses   []Response
+	StatusCodes map[int]int
+	TotalTimes  struct {
+		Max  time.Duration
+		Min  time.Duration
+		Mean time.Duration
+		All  []time.Duration
+	}
+	TimeToFirstBytes struct {
+		Max  time.Duration
+		Min  time.Duration
+		Mean time.Duration
+		All  []time.Duration
+	}
+}
+
 func main() {
 	urlArg := flag.String("u", "", "URL to load test against")
 	n := flag.Int("n", 10, "Number of requests to make")
@@ -29,57 +55,34 @@ func main() {
 	}
 
 	results := loadTest(testURL, *n, *c)
-	fmt.Printf("Successes: %d\n", results.Successes)
-	fmt.Printf("Failures: %d\n", results.Failures)
-}
-
-type Response struct {
-	StatusCode      int
-	Error           error
-	TotalTime       time.Duration
-	TimeToFirstByte time.Duration
-}
-
-type Results struct {
-	Successes   int
-	Failures    int
-	Responses   []Response
-	StatusCodes map[int]int
+	printResults(results)
 }
 
 func loadTest(testURL *url.URL, n int, concurrency int) Results {
-	jobs := make(chan string, n)
-	results := make(chan Response, n)
+	jobCh := make(chan string, n)
+	resultCh := make(chan Response, n)
 
 	// start workers
 	for range concurrency {
-		go worker(jobs, results)
+		go worker(jobCh, resultCh)
 	}
 
 	// send work to workers
 	for range n {
-		jobs <- testURL.String()
+		jobCh <- testURL.String()
 	}
-	close(jobs)
+	close(jobCh)
 
-	res := Results{
+	results := Results{
 		StatusCodes: map[int]int{},
 	}
 	// collect results of work
 	for range n {
-		resp := <-results
-		if resp.Error != nil || resp.StatusCode >= 500 {
-			res.Failures++
-		} else {
-			res.Successes++
-		}
-		res.Responses = append(res.Responses, resp)
-		if resp.Error == nil {
-			res.StatusCodes[resp.StatusCode] += 1
-		}
+		resp := <-resultCh
+		collectMetrics(&results, resp)
 	}
 
-	return res
+	return results
 }
 
 func worker(jobs <-chan string, results chan<- Response) {
@@ -120,4 +123,49 @@ func worker(jobs <-chan string, results chan<- Response) {
 			TimeToFirstByte: timeToFirstByte,
 		}
 	}
+}
+
+func collectMetrics(results *Results, response Response) {
+	if response.Error != nil {
+		results.Failures++
+		return
+	}
+	results.StatusCodes[response.StatusCode] += 1
+	results.TotalTimes.All = append(results.TotalTimes.All, response.TotalTime)
+	results.TimeToFirstBytes.All = append(results.TimeToFirstBytes.All, response.TimeToFirstByte)
+	if response.StatusCode >= 500 {
+		results.Failures++
+	} else {
+		results.Successes++
+	}
+
+	results.TotalTimes.Max = max(results.TotalTimes.Max, response.TotalTime)
+	if results.TotalTimes.Min == 0 {
+		results.TotalTimes.Min = response.TotalTime
+	}
+	results.TotalTimes.Min = min(results.TotalTimes.Min, response.TotalTime)
+	results.TimeToFirstBytes.Max = max(results.TimeToFirstBytes.Max, response.TimeToFirstByte)
+	if results.TimeToFirstBytes.Min == 0 {
+		results.TimeToFirstBytes.Min = response.TimeToFirstByte
+	}
+	results.TimeToFirstBytes.Min = min(results.TimeToFirstBytes.Min, response.TimeToFirstByte)
+}
+
+func printResults(results Results) {
+	fmt.Printf("Results\n")
+	fmt.Printf("\tSuccess (2xx) %d\n", results.Successes)
+	fmt.Printf("\tFailures (5xx) %d\n", results.Failures)
+
+	var totalTime int64
+	for _, d := range results.TotalTimes.All {
+		totalTime += int64(d)
+	}
+	meanTotalTime := time.Duration(totalTime / int64(len(results.TotalTimes.All)))
+	fmt.Printf("Total Request Time (max, min, mean): %f %f %f\n", results.TotalTimes.Max.Seconds(), results.TotalTimes.Min.Seconds(), meanTotalTime.Seconds())
+	var totalTimeToFirstByte int64
+	for _, d := range results.TimeToFirstBytes.All {
+		totalTimeToFirstByte += int64(d)
+	}
+	meanTimeToFirstByte := time.Duration(totalTime / int64(len(results.TotalTimes.All)))
+	fmt.Printf("Time To First Byte (max, min, mean): %f %f %f\n", results.TimeToFirstBytes.Max.Seconds(), results.TimeToFirstBytes.Min.Seconds(), meanTimeToFirstByte.Seconds())
 }
