@@ -11,6 +11,7 @@ import (
 func main() {
 	urlArg := flag.String("u", "", "URL to load test against")
 	n := flag.Int("n", 10, "Number of requests to make")
+	c := flag.Int("c", 1, "Number of concurrent requests to make")
 
 	flag.Parse()
 
@@ -25,23 +26,60 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = loadTest(testURL, *n)
-	if err != nil {
-		fmt.Printf("running load test: %s", err.Error())
-		os.Exit(1)
-	}
-
+	results := loadTest(testURL, *n, *c)
+	fmt.Printf("Successes: %d\n", results.Successes)
+	fmt.Printf("Failures: %d\n", results.Failures)
 }
 
-func loadTest(testURL *url.URL, n int) error {
-	for range n {
-		resp, err := http.Get(testURL.String())
-		if err != nil {
-			return fmt.Errorf("making http request: %w", err)
-		}
+type Response struct {
+	StatusCode int
+	Error      error
+}
 
-		fmt.Printf("response code: %d\n", resp.StatusCode)
+type Results struct {
+	Successes int
+	Failures  int
+}
+
+func loadTest(testURL *url.URL, n int, concurrency int) Results {
+	jobs := make(chan string, n)
+	results := make(chan Response, n)
+
+	// start workers
+	for range concurrency {
+		go worker(jobs, results)
 	}
 
-	return nil
+	// send work to workers
+	for range n {
+		jobs <- testURL.String()
+	}
+	close(jobs)
+
+	res := Results{}
+	// collect results of work
+	for range n {
+		resp := <-results
+		if resp.Error != nil || resp.StatusCode >= 500 {
+			res.Failures++
+		} else {
+			res.Successes++
+		}
+	}
+
+	return res
+}
+
+func worker(jobs <-chan string, results chan<- Response) {
+	for j := range jobs {
+		resp, err := http.Get(j)
+		if err != nil {
+			results <- Response{
+				Error: err,
+			}
+		}
+		results <- Response{
+			StatusCode: resp.StatusCode,
+		}
+	}
 }
